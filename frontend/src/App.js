@@ -433,6 +433,11 @@ function Dashboard({ account, onLogout }) {
     setProfiles((m) => ({ ...m, [id]: profile(id, { gubun: "개인", name: "신규 업체" }) }));
     setActiveProfile(id);
   };
+  const deleteCompany = (id) => {
+    const name = profiles[id] ? profiles[id].name : "";
+    setProfiles((m) => { const { [id]: _, ...rest } = m; return rest; });
+    flash(`'${name}' 업체를 삭제했습니다.`);
+  };
 
   const key = `${year}-${month}`;
   const companies = store[key] || null;
@@ -570,7 +575,7 @@ function Dashboard({ account, onLogout }) {
           <ReceivablesTab profiles={profiles} onOpenProfile={openProfile} onAddCompany={addCompany} corpStore={corpStore} jongStore={jongStore}
             deptAccounts={deptAccounts} viewAsDept={viewAsDept} staffNameOf={staffNameOf} />
         ) : tax === "총괄업체 관리" ? (
-          <MasterTab profiles={profiles} onOpen={openProfile} onAdd={addCompany} deptAccounts={deptAccounts} viewAsDept={viewAsDept} staffNameOf={staffNameOf} />
+          <MasterTab profiles={profiles} onOpen={openProfile} onAdd={addCompany} onDelete={deleteCompany} deptAccounts={deptAccounts} viewAsDept={viewAsDept} staffNameOf={staffNameOf} />
         ) : tax === "부가가치세" ? (
           <VatTab profiles={profiles} onOpenProfile={openProfile} store={vatStore} setStore={setVatStore} firm={firm} viewAsDept={viewAsDept} staffNameOf={staffNameOf} />
         ) : tax === "종합소득세" ? (
@@ -1190,12 +1195,13 @@ function Seg3({ label, value, onChange, opts, tb }) {
 }
 
 /* --------------------------- 총괄업체 관리 ------------------------- */
-function MasterTab({ profiles, onOpen, onAdd, deptAccounts, viewAsDept, staffNameOf }) {
+function MasterTab({ profiles, onOpen, onAdd, onDelete, deptAccounts, viewAsDept, staffNameOf }) {
   const [q, setQ] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(null); // 삭제 확인 대상 profile id
   const list = Object.values(profiles)
     .filter((p) => p.name.includes(q.trim()))
     .filter((p) => !viewAsDept || p.deptId === viewAsDept);
-  const heads = ["업체명", "구분", "과세/면세", "사업자등록번호", "대표자", "업종", "결산월", "프로그램", "원천세", "담당자"];
+  const heads = ["업체명", "구분", "과세/면세", "사업자등록번호", "대표자", "업종", "결산월", "프로그램", "원천세", "담당자", ""];
   return (
     <div>
       <div style={S.toolbar}>
@@ -1214,7 +1220,7 @@ function MasterTab({ profiles, onOpen, onAdd, deptAccounts, viewAsDept, staffNam
         <div style={{ overflow: "auto", maxHeight: "calc(100vh - 260px)" }}>
           <table style={{ ...S.table, tableLayout: "auto", minWidth: 940 }}>
             <thead><tr>
-              {heads.map((hd) => <th key={hd} style={{ ...S.th, ...S.thSub, top: 0, textAlign: "left", paddingLeft: 12 }}>{hd}</th>)}
+              {heads.map((hd, i) => <th key={hd || ("action" + i)} style={{ ...S.th, ...S.thSub, top: 0, textAlign: "left", paddingLeft: 12 }}>{hd}</th>)}
             </tr></thead>
             <tbody>
               {list.map((p) => (
@@ -1231,13 +1237,41 @@ function MasterTab({ profiles, onOpen, onAdd, deptAccounts, viewAsDept, staffNam
                   <td style={{ ...S.td }}>{p.program}</td>
                   <td style={{ ...S.td }}>{p.wht}</td>
                   <td style={{ ...S.td, textAlign: "left", paddingLeft: 12 }}>{p.deptId ? staffNameOf(p.deptId) : "미배정"}</td>
+                  <td style={{ ...S.td, padding: 4 }}>
+                    <button className="btnGhost2" style={{ ...S.iconBtn, width: 26, height: 26 }} onClick={() => setConfirmDelete(p.id)} title="삭제">
+                      <Trash2 size={14} color="#B4232A" />
+                    </button>
+                  </td>
                 </tr>
               ))}
-              {list.length === 0 && <tr><td colSpan={10} style={S.noRow}>업체가 없습니다.</td></tr>}
+              {list.length === 0 && <tr><td colSpan={heads.length} style={S.noRow}>업체가 없습니다.</td></tr>}
             </tbody>
           </table>
         </div>
       </div>
+
+      {confirmDelete && profiles[confirmDelete] && (
+        <Modal onClose={() => setConfirmDelete(null)}>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+            <div style={S.modalIcon}><AlertCircle size={20} color="#B4232A" /></div>
+            <div>
+              <h3 style={{ margin: "2px 0 6px", fontSize: 16, color: NAVY }}>업체 삭제</h3>
+              <p style={{ margin: 0, fontSize: 13.5, color: INK, lineHeight: 1.6 }}>
+                <b>{profiles[confirmDelete].name}</b> 업체를 총괄업체 관리에서 삭제하시겠습니까?
+                <br />
+                <span style={{ fontSize: 12, color: SUB }}>
+                  삭제 후에는 되돌릴 수 없습니다. (이미 각 세목 관리표에 반영된 데이터는 그대로 유지됩니다.)
+                </span>
+              </p>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+            <button className="btnGhost2" style={S.btnCancel} onClick={() => setConfirmDelete(null)}>취소</button>
+            <button className="btnGold" style={{ ...S.btnConfirm, background: "#B4232A" }}
+              onClick={() => { onDelete(confirmDelete); setConfirmDelete(null); }}>삭제</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
