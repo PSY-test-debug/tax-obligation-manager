@@ -1,9 +1,18 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   Check, RefreshCw, LogOut, Building2, User, Search,
   ChevronDown, AlertCircle, ClipboardList, ArrowRight,
   X, Plus, Phone, Mail, KeyRound, Users, Wallet, Pencil, Info, Trash2, Settings, Printer, Link2,
 } from "lucide-react";
+import {
+  useVendors,
+  useDeptAccounts,
+  useLedger,
+  useFirm
+} from "./hooks/useAppData";
+
+import { LEDGER } from "./api/endpoints";
+import { describeError } from "./api/client";
 
 /* ------------------------------------------------------------------ *
  *  신고의무 관리 시스템  ·  1단계: 원천세 모듈
@@ -72,23 +81,28 @@ const MONTHLY_COLS = [
   },
   { key: "기타지급", label: "기타소득\n지급명세서", active: (c) => c.current.기타 },
 ];
-/* 반기 (1월·7월) — 7월: 당해 상반기(H1) 근로이력 / 1월: 전년 하반기(H2) 근로이력 */
+/* 반기 (1월·7월) — 7월: 당해 상반기(H1) 근로이력 / 1월: 전년 하반기(H2) 근로이력
+ * ※ c.half 스냅샷이 아니라 store를 실시간으로 스캔해서 판정한다(과거 달 데이터 수정이 즉시 반영되도록). */
 const HALF_COLS = [
   {
     key: "근로간이", label: "근로소득\n간이지급명세서",
-    active: (c, x) => (x.month === 7 ? !!c.half[`${x.year}-H1`] : !!c.half[`${x.year - 1}-H2`]),
+    active: (c, x) => (x.month === 7
+      ? hasIncomeInMonths(x.store, c.id, x.year, [1, 2, 3, 4, 5, 6], "근로")
+      : hasIncomeInMonths(x.store, c.id, x.year - 1, [7, 8, 9, 10, 11, 12], "근로")),
   },
 ];
-/* 2월 — "전년(귀속연도)" 이력 기준 (예: 2026년 2월 = 2025년 귀속) */
+/* 2월 — "전년(귀속연도)" 이력 기준 (예: 2026년 2월 = 2025년 귀속)
+ * ※ c.annual 스냅샷이 아니라 store를 실시간으로 스캔해서 판정한다. */
 const FEB_COLS = [
-  { key: "기타지급2", label: "기타소득\n지급명세서", active: (c, x) => !!(c.annual[x.year - 1] && c.annual[x.year - 1].기타) },
-  { key: "이자배당", label: "이자·배당소득\n지급명세서", active: (c, x) => !!(c.annual[x.year - 1] && (c.annual[x.year - 1].이자 || c.annual[x.year - 1].배당)) },
+  { key: "기타지급2", label: "기타소득\n지급명세서", active: (c, x) => hasIncomeInYear(x.store, c.id, x.year - 1, "기타") },
+  { key: "이자배당", label: "이자·배당소득\n지급명세서", active: (c, x) => hasIncomeInYear(x.store, c.id, x.year - 1, "이자") || hasIncomeInYear(x.store, c.id, x.year - 1, "배당") },
 ];
-/* 3월 — "전년(귀속연도)" 이력 기준 (예: 2026년 3월 = 2025년 귀속) */
+/* 3월 — "전년(귀속연도)" 이력 기준 (예: 2026년 3월 = 2025년 귀속)
+ * ※ c.annual 스냅샷이 아니라 store를 실시간으로 스캔해서 판정한다. */
 const MAR_COLS = [
-  { key: "근로지급", label: "근로소득\n지급명세서", active: (c, x) => !!(c.annual[x.year - 1] && c.annual[x.year - 1].근로) },
-  { key: "퇴직지급", label: "퇴직소득\n지급명세서", active: (c, x) => !!(c.annual[x.year - 1] && c.annual[x.year - 1].퇴직) },
-  { key: "사업지급", label: "사업소득\n지급명세서", active: (c, x) => !!(c.annual[x.year - 1] && c.annual[x.year - 1].사업) },
+  { key: "근로지급", label: "근로소득\n지급명세서", active: (c, x) => hasIncomeInYear(x.store, c.id, x.year - 1, "근로") },
+  { key: "퇴직지급", label: "퇴직소득\n지급명세서", active: (c, x) => hasIncomeInYear(x.store, c.id, x.year - 1, "퇴직") },
+  { key: "사업지급", label: "사업소득\n지급명세서", active: (c, x) => hasIncomeInYear(x.store, c.id, x.year - 1, "사업") },
 ];
 
 function conditionalGroup(month) {
@@ -119,6 +133,26 @@ function h(keys) {
   INCOME.forEach((k) => (o[k] = keys.includes(k)));
   return o;
 }
+/* 특정 연도(year)의 지정된 월들(months) 중 하나라도 해당 소득유형(incomeKey)이
+ * current(당월 신고 필요내역)에 체크되어 있었는지 store를 직접 스캔해 판정한다.
+ * → 과거 달의 체크 내역을 나중에 수정해도, 이를 참조하는 반기/2월/3월 지급명세서
+ *   신고여부 컬럼이 store 변경 즉시 재계산되어 실시간으로 반영된다. */
+function hasIncomeInMonths(store, companyId, year, months, incomeKey) {
+  if (!store) return false;
+  for (const m of months) {
+    const monthData = store[`${year}-${m}`];
+    if (!monthData) continue;
+    const co = monthData.find((c) => c.id === companyId);
+    if (co && co.current[incomeKey]) return true;
+  }
+  return false;
+}
+/* 특정 연도(귀속연도) 1~12월 전체를 스캔해 해당 소득유형이 한 번이라도 체크되었는지 판정
+ * (근로·퇴직·사업소득 지급명세서(3월), 기타·이자·배당소득 지급명세서(2월) 판정에 사용) */
+function hasIncomeInYear(store, companyId, year, incomeKey) {
+  return hasIncomeInMonths(store, companyId, year, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], incomeKey);
+}
+
 /* 대상 연/월 기준 직전 최대 6개월간 실제 체크(current) 이력을 롤링 집계
  * → "과거 6개월 이력" 컬럼이 매달 실제 데이터로 갱신되도록 함 */
 function rollingHistory(store, companyId, targetY, targetM) {
@@ -410,17 +444,46 @@ function Dashboard({ account, onLogout }) {
   const [tax, setTax] = useState("원천세");
   const [year, setYear] = useState(NOW.y);
   const [month, setMonth] = useState(NOW.m);
-  const [store, setStore] = useState(seedStore);
   const [query, setQuery] = useState("");
-  const [migrate, setMigrate] = useState(null); // {y,m,pkey,plabel}
-  const [migrateIncludeCurrent, setMigrateIncludeCurrent] = useState(true); // 전월 신고 체크 내역 포함 여부
+  const [migrate, setMigrate] = useState(null);
+  const [migrateIncludeCurrent, setMigrateIncludeCurrent] = useState(true);
   const [toast, setToast] = useState("");
-  const [profiles, setProfiles] = useState(seedProfiles);
-  const [vatStore, setVatStore] = useState(seedVat);
-  const [jongStore, setJongStore] = useState(seedJongse);
-  const [corpStore, setCorpStore] = useState(seedCorp);
-  const [firm, setFirm] = useState({ name: "", bizNo: "", ceo: "", bank: "", account: "", phone: "", taxbotId: "", taxbotPw: "", logo: "", invoiceLogo: "" });
-  const [deptAccounts, setDeptAccounts] = useState(seedDeptAccounts);
+
+  /* 서버 통신 오류를 기존 토스트로 그대로 노출한다.
+   * flash 는 아래에서 정의되므로 ref 를 경유한다(초기화 순서). */
+  const flashRef = useRef(null);
+  const handleApiError = useCallback((err, phase) => {
+    const prefix = phase === "load" ? "데이터를 불러오지 못했습니다" : "저장하지 못했습니다";
+    if (flashRef.current) flashRef.current(`${prefix}: ${describeError(err)}`);
+  }, []);
+
+  /* 총괄업체 · 담당자 · 사무소 설정 */
+  const vendors      = useVendors({ onError: handleApiError });
+  const deptAccountsRes = useDeptAccounts({ onError: handleApiError });
+  const firmRes      = useFirm({ onError: handleApiError });
+
+  /* 세목 원장 4종 (미수금은 ReceivablesTab 내부에서 별도 사용) */
+  const whtRes    = useLedger(LEDGER.WHT,    { onError: handleApiError });
+  const vatRes    = useLedger(LEDGER.VAT,    { onError: handleApiError });
+  const incomeRes = useLedger(LEDGER.INCOME, { onError: handleApiError });
+  const corpRes   = useLedger(LEDGER.CORP,   { onError: handleApiError });
+
+  /* ── 이하 기존 변수명을 그대로 유지한다 ──
+   * 덕분에 이 아래 3,100여 줄은 수정이 필요 없다. */
+  const profiles = vendors.value;
+  const setProfiles = vendors.setValue;
+  const deptAccounts = deptAccountsRes.value;
+  const setDeptAccounts = deptAccountsRes.setValue;
+  const firm = firmRes.firm;
+  const store = whtRes.value;
+  const setStore = whtRes.setValue;
+  const vatStore = vatRes.value;
+  const setVatStore = vatRes.setValue;
+  const jongStore = incomeRes.value;
+  const setJongStore = incomeRes.setValue;
+  const corpStore = corpRes.value;
+  const setCorpStore = corpRes.setValue;
+
   const [viewAsDept, setViewAsDept] = useState(null); // null = 총괄(전체보기) · 그 외 = 선택한 담당자의 deptId
   const staffNameOf = (deptId) => (deptAccounts[deptId] ? (deptAccounts[deptId].name || deptId) : "미배정");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -443,6 +506,7 @@ function Dashboard({ account, onLogout }) {
   const companies = store[key] || null;
 
   const flash = (msg) => { setToast(msg); };
+  flashRef.current = flash;
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 2600);
@@ -522,7 +586,7 @@ function Dashboard({ account, onLogout }) {
 
   const condGroup = conditionalGroup(month);
   const allCols = [...MONTHLY_COLS, ...(condGroup ? condGroup.cols : [])];
-  const ctx = { year, month };
+  const ctx = { year, month, store };
 
   const summary = useMemo(() => {
     let total = 0, done = 0;
@@ -535,7 +599,7 @@ function Dashboard({ account, onLogout }) {
       });
     });
     return { total, done, rate: total ? Math.round((done / total) * 100) : 0 };
-  }, [deptCompanies, allCols, year, month]);
+  }, [deptCompanies, allCols, year, month, store]);
 
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, color: INK }}>
@@ -664,8 +728,29 @@ function Dashboard({ account, onLogout }) {
         </Modal>
       )}
 
-      {settingsOpen && <FirmSettingsModal firm={firm} onSave={(f) => { setFirm(f); setSettingsOpen(false); }} onClose={() => setSettingsOpen(false)} />}
-      {staffModalOpen && <StaffAccountsModal deptAccounts={deptAccounts} setDeptAccounts={setDeptAccounts} profiles={profiles} onClose={() => setStaffModalOpen(false)} />}
+      {settingsOpen && (
+        <FirmSettingsModal
+          firm={firm}
+          onSave={async (f) => {
+            const ok = await firmRes.save(f);          /* 서버 저장 후 닫는다 */
+            if (ok) { setSettingsOpen(false); flash("사무소 설정을 저장했습니다."); }
+      }}
+      onClose={() => setSettingsOpen(false)}
+  />
+)}
+
+{staffModalOpen && (
+  <StaffAccountsModal
+    deptAccounts={deptAccounts}
+    setDeptAccounts={setDeptAccounts}
+    profiles={profiles}
+    onClose={async () => {
+      setStaffModalOpen(false);
+      await deptAccountsRes.flush();   /* 대기 중 저장 반영 */
+      vendors.reload();                /* 담당자 해제 결과 반영 */
+    }}
+  />
+)}
       {activeProfile && profiles[activeProfile] && (
         <ProfileModal p={profiles[activeProfile]} onSave={saveProfile} onClose={() => setActiveProfile(null)} deptAccounts={deptAccounts} />
       )}
@@ -728,6 +813,10 @@ function Grid({ companies, month, condGroup, patch, ctx, onOpen }) {
 }
 
 function Row({ c, monthlyCols, condCols, patch, ctx, onOpen }) {
+  /* 과거 6개월 신고이력: c.history 정적 스냅샷 대신 store를 실시간으로 스캔해서
+   * 매 렌더링마다 재계산한다 → 과거 달의 체크 내역을 나중에 고쳐도 이후 달의
+   * "과거 6개월 신고이력" 컬럼에 즉시 반영된다. */
+  const liveHistory = rollingHistory(ctx.store, c.id, ctx.year, ctx.month);
   const setCurrent = (k) =>
     patch(c.id, (x) => {
       const current = { ...x.current, [k]: !x.current[k] };
@@ -739,11 +828,15 @@ function Row({ c, monthlyCols, condCols, patch, ctx, onOpen }) {
     });
   const setIlyong = (v) => patch(c.id, (x) => ({ ...x, ilyong: v }));
   const setPayroll = (v) => patch(c.id, (x) => ({ ...x, payroll: v }));
-  const toggleFiling = (key) =>
-    patch(c.id, (x) => ({
-      ...x,
-      filings: { ...x.filings, [key]: (x.filings[key] || "미신고") === "완료" ? "미신고" : "완료" },
-    }));
+const toggleFiling = (key) => {
+  const newStatus = (c.filings[key] || "미신고") === "완료" ? "미신고" : "완료";
+  
+  // UI 업데이트
+  patch(c.id, (x) => ({
+    ...x,
+    filings: { ...x.filings, [key]: newStatus },
+  }));
+};
 
   return (
     <tr className="row">
@@ -760,7 +853,7 @@ function Row({ c, monthlyCols, condCols, patch, ctx, onOpen }) {
       {INCOME.map((k) => (
         <td key={"h" + k} style={{ ...S.td, ...S.cellHist }}>
           <div style={S.center}>
-            {c.history[k] ? <Check size={15} color={NAVY} strokeWidth={3} /> : <span style={S.dot}>·</span>}
+            {liveHistory[k] ? <Check size={15} color={NAVY} strokeWidth={3} /> : <span style={S.dot}>·</span>}
           </div>
         </td>
       ))}
@@ -1417,7 +1510,9 @@ function StaffAccountsModal({ deptAccounts, setDeptAccounts, profiles, onClose }
 function ReceivablesTab({ profiles, onOpenProfile, onAddCompany, corpStore, jongStore, deptAccounts, viewAsDept, staffNameOf }) {
   const [year, setYear] = useState(2026);
   const [month, setMonth] = useState(3);               // 예시 기준월
-  const [store, setStore] = useState(seedAR);
+  const arRes = useLedger(LEDGER.AR);
+  const store = arRes.value;
+  const setStore = arRes.setValue;
   const [asOf, setAsOf] = useState({});                // monthKey -> 'YYYY-MM-DD'
   const [q, setQ] = useState("");
   const isMaster = !viewAsDept;                        // 총괄(전체보기) 여부는 상단바에서 선택한 담당자로 결정됨
@@ -3588,6 +3683,8 @@ function Style() {
       ::-webkit-scrollbar { width:11px; height:11px; }
       ::-webkit-scrollbar-thumb { background:#C6D0DC; border-radius:6px; border:3px solid #fff; }
       ::-webkit-scrollbar-thumb:hover { background:#A9B6C6; }
+     @keyframes spin { to { transform: rotate(360deg); } }
+         .spin { animation: spin 1s linear infinite; }
     `}</style>
   );
 }
