@@ -9,9 +9,12 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "migrate": "node src/db/migrate.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "create-admin": "node scripts/create-admin.js",
+    "verify": "node scripts/verify.js && node scripts/verify-auth.js && node scripts/verify-tenancy.js"
   },
   "dependencies": {
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

@@ -3,7 +3,25 @@
  *   실제 PostgreSQL 을 대상으로 전 엔드포인트를 왕복 검증한다.
  *   실행: node scripts/verify.js   (서버가 떠 있어야 함)
  * ================================================================== */
-const BASE = process.env.VERIFY_BASE || 'http://localhost:5099/api';
+const BASE = process.env.VERIFY_BASE || 'http://localhost:5097/api';
+const ORIGIN = process.env.VERIFY_ORIGIN || 'http://localhost:3000';
+const LOGIN_ID = process.env.VERIFY_LOGIN_ID || 'parksy';
+const LOGIN_PW = process.env.VERIFY_LOGIN_PW || 'Dasol!2026tnc';
+
+/* 인증 도입 후 모든 API 는 세션이 필요하다. 쿠키를 유지한다. */
+const cookieJar = new Map();
+function cookieHeader() {
+  return [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+function absorbCookies(res) {
+  for (const line of (res.headers.getSetCookie ? res.headers.getSetCookie() : [])) {
+    const [pair] = line.split(';');
+    const i = pair.indexOf('=');
+    const k = pair.slice(0, i).trim();
+    const val = pair.slice(i + 1).trim();
+    if (val === '') cookieJar.delete(k); else cookieJar.set(k, val);
+  }
+}
 
 let pass = 0;
 let fail = 0;
@@ -33,11 +51,16 @@ function deepEqual(a, b) {
 }
 
 async function req(method, path, body) {
+  const headers = { Origin: ORIGIN };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (cookieJar.size) headers.Cookie = cookieHeader();
+
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  absorbCookies(res);
   let json = null;
   try {
     json = await res.json();
@@ -48,10 +71,22 @@ async function req(method, path, body) {
 }
 
 async function main() {
+  console.log('\n=== 0. 로그인 ===');
+  {
+    const r = await req('POST', '/auth/login', { loginId: LOGIN_ID, password: LOGIN_PW });
+    ok('로그인 성공', r.status === 200, r.body?.error?.message);
+    if (r.status !== 200) {
+      console.error('\n  로그인 실패로 이후 검증을 진행할 수 없습니다.');
+      console.error('  npm run create-admin 으로 계정을 만든 뒤,');
+      console.error('  VERIFY_LOGIN_ID / VERIFY_LOGIN_PW 환경변수를 지정하세요.\n');
+      process.exit(1);
+    }
+  }
+
   console.log('\n=== 1. 헬스 체크 ===');
   {
     const r = await req('GET', '/health');
-    ok('GET /health 200', r.status === 200 && r.body.ok === true, `db=${r.body?.db}`);
+    ok('GET /health 200', r.status === 200 && r.body.ok === true, r.body?.status);
   }
 
   console.log('\n=== 2. 총괄업체 camelCase 왕복 ===');
@@ -155,7 +190,7 @@ async function main() {
 
     const rMalformed = await fetch(BASE + '/vendors', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: ORIGIN, Cookie: cookieHeader() },
       body: '{ this is not json',
     });
     ok('깨진 JSON 400', rMalformed.status === 400, (await rMalformed.json())?.error?.code);

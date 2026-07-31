@@ -1,18 +1,13 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useVendors, useDeptAccounts, useLedger, useFirm } from "./hooks/useAppData";
+import { LEDGER } from "./api/endpoints";
+import { describeError } from "./api/client";
+import { useAuth } from "./hooks/useAuth";
 import {
   Check, RefreshCw, LogOut, Building2, User, Search,
   ChevronDown, AlertCircle, ClipboardList, ArrowRight,
   X, Plus, Phone, Mail, KeyRound, Users, Wallet, Pencil, Info, Trash2, Settings, Printer, Link2,
 } from "lucide-react";
-import {
-  useVendors,
-  useDeptAccounts,
-  useLedger,
-  useFirm
-} from "./hooks/useAppData";
-
-import { LEDGER } from "./api/endpoints";
-import { describeError } from "./api/client";
 
 /* ------------------------------------------------------------------ *
  *  신고의무 관리 시스템  ·  1단계: 원천세 모듈
@@ -391,18 +386,48 @@ function arAddDay(iso, n) {
 
 /* ================================================================== */
 export default function App() {
-  const [authed, setAuthed] = useState(false);
-  const [account, setAccount] = useState("");
-  if (!authed)
-    return <Login onLogin={(id) => { setAccount(id); setAuthed(true); }} />;
-  return <Dashboard account={account} onLogout={() => setAuthed(false)} />;
+  const auth = useAuth();
+
+  /* 새로고침 직후 세션 확인 중 — 로그인 화면이 깜빡이는 것을 막는다 */
+  if (auth.status === "checking") {
+    return (
+      <div style={{ ...S.loginWrap }}>
+        <Style />
+        <div style={{ textAlign: "center", color: SUB, fontSize: 13 }}>
+          <RefreshCw size={22} color={NAVY} className="spin" />
+          <div style={{ marginTop: 10 }}>세션을 확인하는 중입니다…</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (auth.status !== "authed") {
+    return <Login auth={auth} />;
+  }
+
+  /* 초기 비밀번호를 쓰는 계정은 변경 전까지 다른 화면을 열 수 없다 */
+  if (auth.user.mustChangePw) {
+    return <PasswordChangeRequired auth={auth} />;
+  }
+
+  return <Dashboard auth={auth} onLogout={auth.logout} />;
 }
 
 /* ------------------------------- 로그인 ---------------------------- */
-function Login({ onLogin }) {
+function Login({ auth }) {
   const [id, setId] = useState("");
   const [pw, setPw] = useState("");
-  const submit = () => onLogin(id.trim() || "담당자");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (busy) return;
+    if (!id.trim() || !pw) { return; }
+    setBusy(true);
+    await auth.login(id.trim(), pw);
+    setBusy(false);
+    setPw("");          /* 실패 시 비밀번호는 지운다 */
+  };
+
   return (
     <div style={{ ...S.loginWrap }}>
       <Style />
@@ -422,13 +447,86 @@ function Login({ onLogin }) {
           <input className="fx" style={S.input} type="password" value={pw} onChange={(e) => setPw(e.target.value)}
             placeholder="비밀번호" onKeyDown={(e) => e.key === "Enter" && submit()} />
         </Field>
-        <button className="btnPrimary" style={S.loginBtn} onClick={submit}>
-          로그인 <ArrowRight size={16} />
+         {auth.error && (
+        <div style={{
+          fontSize: 12.5, color: "#B42318", background: "#FEF3F2",
+          border: "1px solid #FECDCA", borderRadius: 8,
+          padding: "9px 11px", marginBottom: 12, wordBreak: "keep-all",
+         }}>
+         {auth.error}
+        </div>
+         )}
+        <button
+          className="btnPrimary"
+          style={S.loginBtn}
+          onClick={submit}
+          disabled={busy}
+          >
+          {busy ? "로그인 중…" : "로그인"} <ArrowRight size={16} />
         </button>
       </div>
     </div>
   );
 }
+
+/* -------------------------- 최초 비밀번호 변경 --------------------- */
+function PasswordChangeRequired({ auth }) {
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (busy) return;
+    if (next !== again) { setMsg("새 비밀번호가 서로 다릅니다."); return; }
+    setBusy(true);
+    const r = await auth.changePassword(cur, next);
+    setBusy(false);
+    if (!r.ok) setMsg(r.message);
+  };
+
+  return (
+    <div style={{ ...S.loginWrap }}>
+      <Style />
+      <div style={S.loginCard}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: NAVY, marginBottom: 6 }}>
+          비밀번호 변경
+        </div>
+        <p style={{ fontSize: 12.5, color: SUB, margin: "8px 0 20px", wordBreak: "keep-all" }}>
+          처음 로그인하셨습니다. 사용하시기 전에 비밀번호를 변경해주세요.
+          10자 이상, 영문 대·소문자·숫자·특수문자 중 3종류 이상을 포함해야 합니다.
+        </p>
+        <Field label="현재 비밀번호">
+          <input className="fx" style={S.input} type="password" value={cur}
+            onChange={(e) => setCur(e.target.value)} />
+        </Field>
+        <Field label="새 비밀번호">
+          <input className="fx" style={S.input} type="password" value={next}
+            onChange={(e) => setNext(e.target.value)} />
+        </Field>
+        <Field label="새 비밀번호 확인">
+          <input className="fx" style={S.input} type="password" value={again}
+            onChange={(e) => setAgain(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()} />
+        </Field>
+        {msg && (
+          <div style={{ fontSize: 12.5, color: "#B42318", marginBottom: 12, wordBreak: "keep-all" }}>
+            {msg}
+          </div>
+        )}
+        <button className="btnPrimary" style={S.loginBtn} onClick={submit} disabled={busy}>
+          {busy ? "변경 중…" : "변경하고 시작하기"} <ArrowRight size={16} />
+        </button>
+        <button style={{ ...S.btnGhost, width: "100%", marginTop: 8 }} onClick={auth.logout}>
+          로그아웃
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- 공통 Field ------------------------ */
 function Field({ label, children }) {
   return (
     <label style={{ display: "block", marginBottom: 14 }}>

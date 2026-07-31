@@ -38,6 +38,14 @@ export class ApiError extends Error {
   get isConflict() {
     return this.status === 409;
   }
+  /** 미인증 · 세션 만료 — 로그인 화면으로 보내야 하는 상황 */
+  get isUnauthenticated() {
+    return this.status === 401;
+  }
+  /** 권한 부족 */
+  get isForbidden() {
+    return this.status === 403;
+  }
   /** 네트워크 단절 (서버 미기동 등) */
   get isOffline() {
     return this.code === 'NETWORK';
@@ -56,6 +64,26 @@ export function describeError(err) {
   return err && err.message ? err.message : '알 수 없는 오류가 발생했습니다.';
 }
 
+/* ------------------------------------------------------------------
+ * 세션 만료 알림
+ *
+ * 어느 API 든 401 을 받으면 여기서 구독자에게 알린다.
+ * useAuth 가 이를 받아 로그인 화면으로 되돌린다.
+ * 각 훅이 개별적으로 401 을 처리하지 않아도 된다.
+ * ------------------------------------------------------------------ */
+const unauthorizedHandlers = new Set();
+
+export function onUnauthorized(handler) {
+  unauthorizedHandlers.add(handler);
+  return () => unauthorizedHandlers.delete(handler);
+}
+
+function notifyUnauthorized(err) {
+  for (const h of unauthorizedHandlers) {
+    try { h(err); } catch (_) { /* 구독자 오류가 요청 흐름을 막지 않게 */ }
+  }
+}
+
 async function request(method, path, body, opts = {}) {
   const url = `${API_BASE}${path}`;
 
@@ -65,10 +93,13 @@ async function request(method, path, body, opts = {}) {
       method,
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...(opts.actor ? { 'X-Actor': opts.actor } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: opts.signal,
+      /* 세션 쿠키를 주고받는다.
+       * 이게 없으면 로그인은 되지만 이후 요청에 쿠키가 실리지 않아
+       * 전부 401 이 된다. 프론트 연동에서 가장 흔한 실수 지점이다. */
+      credentials: 'include',
     });
   } catch (err) {
     /* AbortError 는 호출자가 의도한 취소이므로 그대로 올린다 */
@@ -85,12 +116,18 @@ async function request(method, path, body, opts = {}) {
 
   if (!res.ok || !json || json.ok === false) {
     const e = (json && json.error) || {};
-    throw new ApiError(
+    const err = new ApiError(
       res.status,
       e.code || 'UNKNOWN',
       e.message || `요청 실패 (${res.status})`,
       e
     );
+
+    /* 세션 만료는 전역으로 알린다.
+     * 단, 세션 확인/로그인 요청 자체는 제외한다(무한 루프 방지). */
+    if (err.status === 401 && !opts.skipAuthNotify) notifyUnauthorized(err);
+
+    throw err;
   }
 
   return json.data;

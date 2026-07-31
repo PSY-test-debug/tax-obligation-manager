@@ -18,9 +18,9 @@ const ApiError = require('../../lib/ApiError');
  *        prefix : '2026' → 2026 으로 시작하는 기간만
  *        keys   : 명시한 기간만 (원천세 6개월 롤링 이력 조회 등에 사용)
  */
-async function findAll(ledger, { prefix, keys } = {}) {
-  const params = [ledger];
-  let where = 'WHERE ledger = $1';
+async function findAll(firmId, ledger, { prefix, keys } = {}) {
+  const params = [firmId, ledger];
+  let where = 'WHERE firm_id = $1 AND ledger = $2';
 
   if (Array.isArray(keys) && keys.length) {
     params.push(keys);
@@ -47,16 +47,16 @@ async function findAll(ledger, { prefix, keys } = {}) {
 }
 
 /** 등록된 기간 키 목록만 (payload 없이 — 목록/네비게이션용) */
-async function listPeriods(ledger) {
+async function listPeriods(firmId, ledger) {
   const { rows } = await db.query(
     `SELECT period_key, revision, updated_at,
             jsonb_array_length(
               CASE WHEN jsonb_typeof(payload) = 'array' THEN payload ELSE '[]'::jsonb END
             ) AS row_count
        FROM ledgers
-      WHERE ledger = $1
+      WHERE firm_id = $1 AND ledger = $2
       ORDER BY period_key`,
-    [ledger]
+    [firmId, ledger]
   );
   return rows.map((r) => ({
     periodKey: r.period_key,
@@ -66,11 +66,11 @@ async function listPeriods(ledger) {
   }));
 }
 
-async function findOne(ledger, periodKey) {
+async function findOne(firmId, ledger, periodKey) {
   const { rows } = await db.query(
     `SELECT period_key, payload, revision, updated_at, updated_by
-       FROM ledgers WHERE ledger = $1 AND period_key = $2`,
-    [ledger, periodKey]
+       FROM ledgers WHERE firm_id = $1 AND ledger = $2 AND period_key = $3`,
+    [firmId, ledger, periodKey]
   );
   if (!rows[0]) return null;
   return {
@@ -90,11 +90,12 @@ async function findOne(ledger, periodKey) {
  * 조용히 덮어쓰는 사고를 막는다. 충돌 시 409 를 던져
  * 프론트가 서버 값을 다시 불러오게 한다.
  */
-async function save(ledger, periodKey, payload, { expectedRevision, updatedBy = '' } = {}) {
+async function save(firmId, ledger, periodKey, payload, { expectedRevision, updatedBy = '' } = {}) {
   return db.transaction(async (client) => {
     const { rows: cur } = await client.query(
-      'SELECT revision FROM ledgers WHERE ledger = $1 AND period_key = $2 FOR UPDATE',
-      [ledger, periodKey]
+      `SELECT revision FROM ledgers
+        WHERE firm_id = $1 AND ledger = $2 AND period_key = $3 FOR UPDATE`,
+      [firmId, ledger, periodKey]
     );
 
     if (cur[0] && Number.isInteger(expectedRevision) && cur[0].revision !== expectedRevision) {
@@ -109,9 +110,9 @@ async function save(ledger, periodKey, payload, { expectedRevision, updatedBy = 
      * (자동 저장이 같은 내용을 재전송할 때 revision 이 올라가면
      *  다른 담당자에게 불필요한 409 충돌이 발생한다) */
     const { rows } = await client.query(
-      `INSERT INTO ledgers (ledger, period_key, payload, revision, updated_by)
-       VALUES ($1, $2, $3::jsonb, 1, $4)
-       ON CONFLICT (ledger, period_key) DO UPDATE SET
+      `INSERT INTO ledgers (firm_id, ledger, period_key, payload, revision, updated_by)
+       VALUES ($1, $2, $3, $4::jsonb, 1, $5)
+       ON CONFLICT (firm_id, ledger, period_key) DO UPDATE SET
          payload    = EXCLUDED.payload,
          revision   = CASE
                         WHEN ledgers.payload IS DISTINCT FROM EXCLUDED.payload
@@ -120,7 +121,7 @@ async function save(ledger, periodKey, payload, { expectedRevision, updatedBy = 
                       END,
          updated_by = EXCLUDED.updated_by
        RETURNING period_key, payload, revision, updated_at`,
-      [ledger, periodKey, JSON.stringify(payload), updatedBy]
+      [firmId, ledger, periodKey, JSON.stringify(payload), updatedBy]
     );
 
     return {
@@ -133,14 +134,14 @@ async function save(ledger, periodKey, payload, { expectedRevision, updatedBy = 
 }
 
 /** 여러 기간 일괄 저장 — 하나의 트랜잭션 (이관/이월 처리용) */
-async function saveMany(ledger, entries, { updatedBy = '' } = {}) {
+async function saveMany(firmId, ledger, entries, { updatedBy = '' } = {}) {
   return db.transaction(async (client) => {
     const saved = [];
     for (const { periodKey, payload } of entries) {
       const { rows } = await client.query(
-        `INSERT INTO ledgers (ledger, period_key, payload, revision, updated_by)
-         VALUES ($1, $2, $3::jsonb, 1, $4)
-         ON CONFLICT (ledger, period_key) DO UPDATE SET
+        `INSERT INTO ledgers (firm_id, ledger, period_key, payload, revision, updated_by)
+         VALUES ($1, $2, $3, $4::jsonb, 1, $5)
+         ON CONFLICT (firm_id, ledger, period_key) DO UPDATE SET
            payload    = EXCLUDED.payload,
            revision   = CASE
                           WHEN ledgers.payload IS DISTINCT FROM EXCLUDED.payload
@@ -149,7 +150,7 @@ async function saveMany(ledger, entries, { updatedBy = '' } = {}) {
                         END,
            updated_by = EXCLUDED.updated_by
          RETURNING period_key, revision`,
-        [ledger, periodKey, JSON.stringify(payload), updatedBy]
+        [firmId, ledger, periodKey, JSON.stringify(payload), updatedBy]
       );
       saved.push({ periodKey: rows[0].period_key, revision: rows[0].revision });
     }
@@ -157,23 +158,23 @@ async function saveMany(ledger, entries, { updatedBy = '' } = {}) {
   });
 }
 
-async function remove(ledger, periodKey) {
+async function remove(firmId, ledger, periodKey) {
   const { rowCount } = await db.query(
-    'DELETE FROM ledgers WHERE ledger = $1 AND period_key = $2',
-    [ledger, periodKey]
+    'DELETE FROM ledgers WHERE firm_id = $1 AND ledger = $2 AND period_key = $3',
+    [firmId, ledger, periodKey]
   );
   return rowCount > 0;
 }
 
 /** 변경 이력 조회 (최신순) */
-async function history(ledger, periodKey, limit = 20) {
+async function history(firmId, ledger, periodKey, limit = 20) {
   const { rows } = await db.query(
     `SELECT id, revision, saved_by, saved_at
        FROM ledger_history
-      WHERE ledger = $1 AND period_key = $2
+      WHERE firm_id = $1 AND ledger = $2 AND period_key = $3
       ORDER BY saved_at DESC
-      LIMIT $3`,
-    [ledger, periodKey, limit]
+      LIMIT $4`,
+    [firmId, ledger, periodKey, limit]
   );
   return rows.map((r) => ({
     id: r.id,
@@ -184,11 +185,11 @@ async function history(ledger, periodKey, limit = 20) {
 }
 
 /** 특정 이력 스냅샷의 payload */
-async function historyPayload(ledger, periodKey, historyId) {
+async function historyPayload(firmId, ledger, periodKey, historyId) {
   const { rows } = await db.query(
     `SELECT payload, revision, saved_at FROM ledger_history
-      WHERE id = $1 AND ledger = $2 AND period_key = $3`,
-    [historyId, ledger, periodKey]
+      WHERE firm_id = $1 AND id = $2 AND ledger = $3 AND period_key = $4`,
+    [firmId, historyId, ledger, periodKey]
   );
   return rows[0] || null;
 }

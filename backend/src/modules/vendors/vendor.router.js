@@ -18,7 +18,7 @@ router.get(
   '/',
   asyncHandler(async (req, res) => {
     const deptId = req.query.deptId ? String(req.query.deptId) : null;
-    const profiles = await repo.findAll({ deptId });
+    const profiles = await repo.findAll(req.auth.firmId, { deptId });
     res.json({ ok: true, data: profiles });
   })
 );
@@ -28,7 +28,7 @@ router.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const id = v.requireId(req.params.id, '업체 id');
-    const profile = await repo.findById(id);
+    const profile = await repo.findById(req.auth.firmId, id);
     if (!profile) throw ApiError.notFound(`업체(${id})를 찾을 수 없습니다.`);
     res.json({ ok: true, data: profile });
   })
@@ -45,12 +45,12 @@ router.post(
     const body = v.requireObject(req.body, '업체 정보');
     const id = body.id ? v.requireId(body.id, '업체 id') : `n${Date.now()}`;
 
-    if (await repo.exists(id)) {
+    if (await repo.exists(req.auth.firmId, id)) {
       throw ApiError.conflict(`이미 존재하는 업체 id 입니다. (${id})`);
     }
     if (body.gubun) v.requireEnum(body.gubun, ['개인', '법인'], '구분');
 
-    const saved = await repo.upsert(id, body);
+    const saved = await repo.upsert(req.auth.firmId, id, body);
     res.status(201).json({ ok: true, data: saved });
   })
 );
@@ -67,7 +67,7 @@ router.put(
     const body = v.requireObject(req.body, '업체 정보');
     if (body.gubun) v.requireEnum(body.gubun, ['개인', '법인'], '구분');
 
-    const saved = await repo.upsert(id, body);
+    const saved = await repo.upsert(req.auth.firmId, id, body);
     res.json({ ok: true, data: saved });
   })
 );
@@ -89,7 +89,7 @@ router.put(
 
     for (const p of list) v.requireId(p.id, '업체 id');
 
-    const saved = await repo.upsertMany(list);
+    const saved = await repo.upsertMany(req.auth.firmId, list);
     res.json({ ok: true, data: saved, count: saved.length });
   })
 );
@@ -103,7 +103,7 @@ router.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const id = v.requireId(req.params.id, '업체 id');
-    const ok = await repo.softDelete(id);
+    const ok = await repo.softDelete(req.auth.firmId, id);
     if (!ok) throw ApiError.notFound(`업체(${id})를 찾을 수 없습니다.`);
     res.json({ ok: true, data: { id, deleted: true } });
   })
@@ -114,9 +114,9 @@ router.post(
   '/:id/restore',
   asyncHandler(async (req, res) => {
     const id = v.requireId(req.params.id, '업체 id');
-    const ok = await repo.restore(id);
+    const ok = await repo.restore(req.auth.firmId, id);
     if (!ok) throw ApiError.notFound(`업체(${id})를 찾을 수 없습니다.`);
-    res.json({ ok: true, data: await repo.findById(id) });
+    res.json({ ok: true, data: await repo.findById(req.auth.firmId, id) });
   })
 );
 

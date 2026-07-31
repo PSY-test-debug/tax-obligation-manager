@@ -84,6 +84,35 @@ export const ledgerApi = {
     http.get(`/ledgers/${ledger}/${encodeURIComponent(periodKey)}/history`, opts),
 };
 
+/* ---------------- 인증 ---------------- */
+export const authApi = {
+  /** 로그인 → { user, firm }. 세션 쿠키는 서버가 직접 심는다 */
+  login: (loginId, password) =>
+    http.post('/auth/login', { loginId, password }, { skipAuthNotify: true }),
+
+  logout: () => http.post('/auth/logout', {}, { skipAuthNotify: true }),
+
+  /** 새로고침 시 세션 복원. 미로그인이면 null (에러 아님) */
+  me: () => http.get('/auth/me', { skipAuthNotify: true }),
+
+  /** 본인 비밀번호 변경 */
+  changePassword: (currentPassword, newPassword) =>
+    http.post('/auth/password', { currentPassword, newPassword }),
+
+  /** 계정이 하나도 없는지 (최초 설치 안내용) */
+  setupRequired: () => http.get('/auth/setup-required', { skipAuthNotify: true }),
+};
+
+/* ---------------- 계정 관리 (관리자 전용) ---------------- */
+export const usersApi = {
+  list: () => http.get('/users'),
+  create: (user) => http.post('/users', user),
+  update: (id, patch) => http.put(`/users/${id}`, patch),
+  resetPassword: (id, password) => http.post(`/users/${id}/password`, { password }),
+  unlock: (id) => http.post(`/users/${id}/unlock`, {}),
+  remove: (id) => http.del(`/users/${id}`),
+};
+
 /* ---------------- 헬스 체크 ---------------- */
 export const healthApi = {
   check: (opts) => http.get('/health', opts),

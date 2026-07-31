@@ -49,8 +49,32 @@ export function useDeptAccounts({ onError, enabled = true, debounceMs } = {}) {
  *
  *    revision 을 내부적으로 추적해 낙관적 잠금을 적용한다.
  *    다른 담당자가 먼저 저장했으면 409 → 자동으로 서버 값 재조회.
+ *
+ * ★ prefix 주의 ★
+ *    원천세(wht)는 기간을 넘나들며 파생 판정을 한다.
+ *      · 2·3월 지급명세서  → 전년(1~12월) 전체를 스캔
+ *      · 반기 간이지급명세서 → 전년 하반기 또는 당해 상반기
+ *      · 과거 6개월 이력    → 연도 경계를 넘음
+ *    prefix 로 특정 연도만 불러오면 이 판정이 "조용히" 틀린다.
+ *    오류가 나지 않고 그냥 신고 필요 표시가 안 뜨기 때문에 발견이 늦다.
+ *    원천세에는 prefix 를 쓰지 말 것.
  * ------------------------------------------------------------------ */
+
+/** 기간 교차 판정이 필요해 전체 로드가 필수인 세목 */
+const CROSS_PERIOD_LEDGERS = new Set(['wht']);
+
 export function useLedger(ledger, { onError, enabled = true, prefix, debounceMs } = {}) {
+  if (prefix && CROSS_PERIOD_LEDGERS.has(ledger)) {
+    /* 개발 중에만 경고 — 운영 빌드에서는 조용히 넘어간다 */
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        `[useLedger] '${ledger}' 에 prefix='${prefix}' 를 지정했습니다. ` +
+        '원천세는 전년도 데이터를 스캔해 2·3월 지급명세서와 반기 간이지급명세서 ' +
+        '신고여부를 판정하므로, 기간을 제한하면 판정이 틀립니다. prefix 를 제거하세요.'
+      );
+    }
+  }
+
   /* periodKey → revision */
   const revisionsRef = useRef({});
 

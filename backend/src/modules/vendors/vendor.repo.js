@@ -9,9 +9,9 @@ const { COLUMNS, toProfile, toRowValues } = require('./vendor.mapper');
 const SELECT_COLS = COLUMNS.join(', ');
 
 /** 전체 조회 — 프론트 profiles 와 같은 map 형태로 반환 */
-async function findAll({ deptId } = {}) {
-  const params = [];
-  let where = 'WHERE is_deleted = false';
+async function findAll(firmId, { deptId } = {}) {
+  const params = [firmId];
+  let where = 'WHERE firm_id = $1 AND is_deleted = false';
   if (deptId) {
     params.push(deptId);
     where += ` AND dept_id = $${params.length}`;
@@ -30,16 +30,20 @@ async function findAll({ deptId } = {}) {
   return map;
 }
 
-async function findById(id) {
+async function findById(firmId, id) {
   const { rows } = await db.query(
-    `SELECT ${SELECT_COLS} FROM vendors WHERE id = $1 AND is_deleted = false`,
-    [id]
+    `SELECT ${SELECT_COLS} FROM vendors
+      WHERE firm_id = $1 AND id = $2 AND is_deleted = false`,
+    [firmId, id]
   );
   return rows[0] ? toProfile(rows[0]) : null;
 }
 
-async function exists(id) {
-  const { rowCount } = await db.query('SELECT 1 FROM vendors WHERE id = $1', [id]);
+async function exists(firmId, id) {
+  const { rowCount } = await db.query(
+    'SELECT 1 FROM vendors WHERE firm_id = $1 AND id = $2',
+    [firmId, id]
+  );
   return rowCount > 0;
 }
 
@@ -48,18 +52,19 @@ async function exists(id) {
  * "새로 만들기"와 "수정"을 구분하지 않으므로 upsert 가 자연스럽다.
  * is_deleted = false 로 되살리는 효과도 있다.
  */
-async function upsert(id, profile, client = db) {
-  const values = toRowValues(id, profile);
+async function upsert(firmId, id, profile, client = db) {
+  const values = [firmId, ...toRowValues(id, profile)];
 
   /* sort_order 특별 취급
    *  - 신규 등록이고 값이 없으면 맨 뒤에 붙인다.
    *    (프론트 addCompany 는 map 뒤에 추가되므로 화면에서도 마지막에 보인다)
    *  - 수정이고 값이 없으면 기존 순서를 유지한다.
    *    ProfileModal 저장 시 순서가 바뀌면 UI 회귀가 된다. */
+  /* $1 은 firm_id, 이후 $2.. 가 COLUMNS 순서 */
   const placeholders = COLUMNS.map((col, i) =>
     col === 'sort_order'
-      ? `COALESCE($${i + 1}, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM vendors))`
-      : `$${i + 1}`
+      ? `COALESCE($${i + 2}, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM vendors WHERE firm_id = $1))`
+      : `$${i + 2}`
   ).join(', ');
 
   const updates = COLUMNS.filter((c) => c !== 'id')
@@ -71,9 +76,9 @@ async function upsert(id, profile, client = db) {
     .join(', ');
 
   const { rows } = await client.query(
-    `INSERT INTO vendors (${SELECT_COLS})
-     VALUES (${placeholders})
-     ON CONFLICT (id) DO UPDATE
+    `INSERT INTO vendors (firm_id, ${SELECT_COLS})
+     VALUES ($1, ${placeholders})
+     ON CONFLICT (firm_id, id) DO UPDATE
        SET ${updates}, is_deleted = false
      RETURNING ${SELECT_COLS}`,
     values
@@ -82,11 +87,11 @@ async function upsert(id, profile, client = db) {
 }
 
 /** 여러 건 한 번에 저장 (초기 시드 / 택스봇 일괄 반영용) — 하나의 트랜잭션 */
-async function upsertMany(profiles) {
+async function upsertMany(firmId, profiles) {
   return db.transaction(async (client) => {
     const saved = [];
     for (const p of profiles) {
-      saved.push(await upsert(p.id, p, client));
+      saved.push(await upsert(firmId, p.id, p, client));
     }
     return saved;
   });
@@ -97,18 +102,19 @@ async function upsertMany(profiles) {
  * 세목 원장(ledgers.payload)이 업체 id 를 참조하고 있으므로
  * 물리 삭제하면 과거 신고 이력의 업체명 조회가 깨진다.
  */
-async function softDelete(id) {
+async function softDelete(firmId, id) {
   const { rowCount } = await db.query(
-    'UPDATE vendors SET is_deleted = true WHERE id = $1 AND is_deleted = false',
-    [id]
+    `UPDATE vendors SET is_deleted = true
+      WHERE firm_id = $1 AND id = $2 AND is_deleted = false`,
+    [firmId, id]
   );
   return rowCount > 0;
 }
 
-async function restore(id) {
+async function restore(firmId, id) {
   const { rowCount } = await db.query(
-    'UPDATE vendors SET is_deleted = false WHERE id = $1',
-    [id]
+    'UPDATE vendors SET is_deleted = false WHERE firm_id = $1 AND id = $2',
+    [firmId, id]
   );
   return rowCount > 0;
 }

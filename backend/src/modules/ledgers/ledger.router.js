@@ -45,7 +45,7 @@ router.get(
       ? String(req.query.keys).split(',').map((s) => s.trim()).filter(Boolean)
       : undefined;
 
-    const { store, meta } = await repo.findAll(ledger, { prefix, keys });
+    const { store, meta } = await repo.findAll(req.auth.firmId, ledger, { prefix, keys });
     res.json({ ok: true, data: { store, meta } });
   })
 );
@@ -56,7 +56,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const ledger = req.params.ledger;
     resolveLedger(ledger);
-    res.json({ ok: true, data: await repo.listPeriods(ledger) });
+    res.json({ ok: true, data: await repo.listPeriods(req.auth.firmId, ledger) });
   })
 );
 
@@ -81,8 +81,8 @@ router.put(
 
     if (!entries.length) throw ApiError.badRequest('저장할 기간이 없습니다.');
 
-    const saved = await repo.saveMany(ledger, entries, {
-      updatedBy: String(req.get('X-Actor') || ''),
+    const saved = await repo.saveMany(req.auth.firmId, ledger, entries, {
+      updatedBy: req.auth.loginId,
     });
     res.json({ ok: true, data: saved, count: saved.length });
   })
@@ -97,7 +97,7 @@ router.get(
     const ledger = req.params.ledger;
     const periodKey = assertPeriodKey(ledger, req.params.periodKey);
 
-    const found = await repo.findOne(ledger, periodKey);
+    const found = await repo.findOne(req.auth.firmId, ledger, periodKey);
     if (!found) {
       /* 데이터가 없는 기간은 에러가 아니다.
        * 프론트는 store[key] === undefined 일 때 EmptyState(이관 안내)를
@@ -140,9 +140,10 @@ router.put(
       }
     }
 
-    const saved = await repo.save(ledger, periodKey, payload, {
+    const saved = await repo.save(req.auth.firmId, ledger, periodKey, payload, {
       expectedRevision,
-      updatedBy: String(req.get('X-Actor') || ''),
+      /* 누가 저장했는지 세션에서 가져온다 — 클라이언트가 위조할 수 없다 */
+      updatedBy: req.auth.loginId,
     });
     res.json({ ok: true, data: saved });
   })
@@ -155,7 +156,7 @@ router.delete(
     const ledger = req.params.ledger;
     const periodKey = assertPeriodKey(ledger, req.params.periodKey);
 
-    const ok = await repo.remove(ledger, periodKey);
+    const ok = await repo.remove(req.auth.firmId, ledger, periodKey);
     if (!ok) throw ApiError.notFound(`${ledger} 원장에 ${periodKey} 기간 데이터가 없습니다.`);
     res.json({ ok: true, data: { periodKey, deleted: true } });
   })
@@ -168,7 +169,7 @@ router.get(
     const ledger = req.params.ledger;
     const periodKey = assertPeriodKey(ledger, req.params.periodKey);
     const limit = v.optInt(req.query.limit, { min: 1, max: 100, fallback: 20 });
-    res.json({ ok: true, data: await repo.history(ledger, periodKey, limit) });
+    res.json({ ok: true, data: await repo.history(req.auth.firmId, ledger, periodKey, limit) });
   })
 );
 
@@ -181,7 +182,7 @@ router.get(
     const historyId = v.optInt(req.params.historyId, { min: 1 });
     if (!historyId) throw ApiError.badRequest('이력 id 가 올바르지 않습니다.');
 
-    const snap = await repo.historyPayload(ledger, periodKey, historyId);
+    const snap = await repo.historyPayload(req.auth.firmId, ledger, periodKey, historyId);
     if (!snap) throw ApiError.notFound('해당 이력을 찾을 수 없습니다.');
     res.json({
       ok: true,

@@ -51,12 +51,21 @@ const VENDORS = [
 async function run() {
   console.log('[seed] 시작');
 
+  /* 사무소(테넌트) 확인 — 002 마이그레이션이 기본 사무소를 만들어 둔다 */
+  const { rows } = await db.query('SELECT id, name FROM firms ORDER BY id LIMIT 1');
+  if (!rows[0]) {
+    throw new Error('사무소가 없습니다. npm run migrate 를 먼저 실행하세요.');
+  }
+  const firmId = rows[0].id;
+  console.log(`[seed] 대상 사무소: ${rows[0].name || '(이름 미등록)'} (id=${firmId})`);
+
   /* 순서 중요: vendors.dept_id 가 dept_accounts 를 참조하므로 담당자를 먼저 */
-  const depts = await deptRepo.upsertMany(DEPT_ACCOUNTS);
+  const depts = await deptRepo.upsertMany(firmId, DEPT_ACCOUNTS);
   console.log(`[seed] ✓ 담당자 계정 ${depts.length}건`);
 
   /* sortOrder 를 원본 배열 순서로 부여 → 화면 행 순서가 기존과 동일하게 유지된다 */
   const vendors = await vendorRepo.upsertMany(
+    firmId,
     VENDORS.map((v, i) => ({ ...v, sortOrder: i }))
   );
   console.log(`[seed] ✓ 총괄업체 ${vendors.length}건`);
@@ -64,6 +73,8 @@ async function run() {
   console.log('[seed] 완료 — 세목 원장은 비어 있습니다.');
   console.log('       원천세: 화면에서 "총괄업체 데이터 불러오기"');
   console.log('       미수금: 화면에서 "업체 추가" 또는 "전월 데이터 이월"');
+  console.log('');
+  console.log('[seed] 다음 단계: npm run create-admin 으로 관리자 계정을 만드세요.');
 }
 
 run()
